@@ -192,3 +192,8 @@ Url &Url::operator=(const Url *other)
 
     return *this;
 }
+
+bool Url::isTls()
+{
+    return true;
+}

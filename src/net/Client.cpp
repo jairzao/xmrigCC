@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <utility>
+#include <api/evt_tls.h>
+#include <api/uv_tls.h>
 
 
 #include "interfaces/IClientListener.h"
@@ -41,7 +43,9 @@
 #ifdef XMRIG_PROXY_PROJECT
 #   include "proxy/JobResult.h"
 #else
+
 #   include "net/JobResult.h"
+
 #endif
 
 
@@ -53,30 +57,30 @@
 int64_t Client::m_sequence = 1;
 
 
-Client::Client(int id, const char *agent, IClientListener *listener) :
-    m_quiet(false),
-    m_agent(agent),
-    m_listener(listener),
-    m_id(id),
-    m_retryPause(5000),
-    m_failures(0),
-    m_recvBufPos(0),
-    m_state(UnconnectedState),
-    m_expire(0),
-    m_stream(nullptr),
-    m_socket(nullptr)
+Client::Client(int id, const char* agent, IClientListener* listener) :
+        m_quiet(false),
+        m_agent(agent),
+        m_listener(listener),
+        m_id(id),
+        m_retryPause(5000),
+        m_failures(0),
+        m_recvBufPos(0),
+        m_state(UnconnectedState),
+        m_expire(0),
+        m_stream(nullptr),
+        m_socket(nullptr)
 {
     memset(m_ip, 0, sizeof(m_ip));
     memset(&m_hints, 0, sizeof(m_hints));
 
     m_resolver.data = this;
 
-    m_hints.ai_family   = PF_INET;
+    m_hints.ai_family = PF_INET;
     m_hints.ai_socktype = SOCK_STREAM;
     m_hints.ai_protocol = IPPROTO_TCP;
 
     m_recvBuf.base = m_buf;
-    m_recvBuf.len  = sizeof(m_buf);
+    m_recvBuf.len = sizeof(m_buf);
 
 #   ifndef XMRIG_PROXY_PROJECT
     m_keepAliveTimer.data = this;
@@ -88,6 +92,10 @@ Client::Client(int id, const char *agent, IClientListener *listener) :
 Client::~Client()
 {
     delete m_socket;
+
+#   ifndef XMRIG_NO_SSL_TLS
+    evt_ctx_free(&m_tls_ctx);
+#   endif
 }
 
 
@@ -102,7 +110,7 @@ void Client::connect()
  *
  * @param url
  */
-void Client::connect(const Url *url)
+void Client::connect(const Url* url)
 {
     setUrl(url);
     resolve(m_url.host());
@@ -115,14 +123,14 @@ void Client::disconnect()
     uv_timer_stop(&m_keepAliveTimer);
 #   endif
 
-    m_expire   = 0;
+    m_expire = 0;
     m_failures = -1;
 
     close();
 }
 
 
-void Client::setUrl(const Url *url)
+void Client::setUrl(const Url* url)
 {
     if (!url || !url->isValid()) {
         return;
@@ -150,7 +158,7 @@ void Client::tick(uint64_t now)
 }
 
 
-int64_t Client::submit(const JobResult &result)
+int64_t Client::submit(const JobResult& result)
 {
 #   ifdef XMRIG_PROXY_PROJECT
     const char *nonce = result.nonce;
@@ -166,7 +174,8 @@ int64_t Client::submit(const JobResult &result)
     data[64] = '\0';
 #   endif
 
-    const size_t size = snprintf(m_sendBuf, sizeof(m_sendBuf), "{\"id\":%" PRIu64 ",\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\"}}\n",
+    const size_t size = snprintf(m_sendBuf, sizeof(m_sendBuf),
+                                 "{\"id\":%" PRIu64 ",\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\"}}\n",
                                  m_sequence, m_rpcId, result.jobId.data(), nonce, data);
 
     m_results[m_sequence] = SubmitResult(m_sequence, result.diff, result.actualDiff());
@@ -174,7 +183,7 @@ int64_t Client::submit(const JobResult &result)
 }
 
 
-bool Client::isCriticalError(const char *message)
+bool Client::isCriticalError(const char* message)
 {
     if (!message) {
         return false;
@@ -196,7 +205,7 @@ bool Client::isCriticalError(const char *message)
 }
 
 
-bool Client::parseJob(const rapidjson::Value &params, int *code)
+bool Client::parseJob(const rapidjson::Value& params, int* code)
 {
     if (!params.IsObject()) {
         *code = 2;
@@ -233,9 +242,9 @@ bool Client::parseJob(const rapidjson::Value &params, int *code)
 }
 
 
-bool Client::parseLogin(const rapidjson::Value &result, int *code)
+bool Client::parseLogin(const rapidjson::Value& result, int* code)
 {
-    const char *id = result["id"].GetString();
+    const char* id = result["id"].GetString();
     if (!id || strlen(id) >= sizeof(m_rpcId)) {
         *code = 1;
         return false;
@@ -248,11 +257,11 @@ bool Client::parseLogin(const rapidjson::Value &result, int *code)
 }
 
 
-int Client::resolve(const char *host)
+int Client::resolve(const char* host)
 {
     setState(HostLookupState);
 
-    m_expire     = 0;
+    m_expire = 0;
     m_recvBufPos = 0;
 
     if (m_failures == -1) {
@@ -281,10 +290,21 @@ int64_t Client::send(size_t size)
 
     uv_buf_t buf = uv_buf_init(m_sendBuf, (unsigned int) size);
 
-    if (uv_try_write(m_stream, &buf, 1) < 0) {
-        close();
-        return -1;
+#   ifndef XMRIG_NO_SSL_TLS
+    if (m_url.isTls()) {
+        if (uv_tls_write(reinterpret_cast<uv_tls_t*>(m_stream), &buf, Client::onTlsWrite) < 0) {
+            close();
+            return -1;
+        }
+    } else {
+#   endif
+        if (uv_try_write(m_stream, &buf, 1) < 0) {
+            close();
+            return -1;
+        }
+#   ifndef XMRIG_NO_SSL_TLS
     }
+#   endif
 
     m_expire = uv_now(uv_default_loop()) + kResponseTimeout;
     return m_sequence++;
@@ -300,19 +320,34 @@ void Client::close()
     setState(ClosingState);
 
     if (uv_is_closing(reinterpret_cast<uv_handle_t*>(m_socket)) == 0) {
-        uv_close(reinterpret_cast<uv_handle_t*>(m_socket), Client::onClose);
+#   ifndef XMRIG_NO_SSL_TLS
+        if (m_url.isTls()) {
+            //uv_tls_close(m_stream, Client::onClose);
+        } else {
+#   endif
+            uv_close(reinterpret_cast<uv_handle_t*>(m_socket), Client::onClose);
+#   ifndef XMRIG_NO_SSL_TLS
+        }
+#   endif
     }
 }
 
 
-void Client::connect(struct sockaddr *addr)
+void Client::connect(struct sockaddr* addr)
 {
     setState(ConnectingState);
 
     reinterpret_cast<struct sockaddr_in*>(addr)->sin_port = htons(m_url.port());
     delete m_socket;
 
-    uv_connect_t *req = new uv_connect_t;
+#   ifndef XMRIG_NO_SSL_TLS
+    if (m_url.isTls()) {
+        evt_ctx_init(&m_tls_ctx);
+        evt_ctx_set_nio(&m_tls_ctx, NULL, uv_tls_writer);
+    }
+#   endif
+
+    uv_connect_t* req = new uv_connect_t;
     req->data = this;
 
     m_socket = new uv_tcp_t;
@@ -336,16 +371,16 @@ void Client::login()
     rapidjson::Document doc;
     doc.SetObject();
 
-    auto &allocator = doc.GetAllocator();
+    auto& allocator = doc.GetAllocator();
 
-    doc.AddMember("id",      1,       allocator);
-    doc.AddMember("jsonrpc", "2.0",   allocator);
-    doc.AddMember("method",  "login", allocator);
+    doc.AddMember("id", 1, allocator);
+    doc.AddMember("jsonrpc", "2.0", allocator);
+    doc.AddMember("method", "login", allocator);
 
     rapidjson::Value params(rapidjson::kObjectType);
-    params.AddMember("login", rapidjson::StringRef(m_url.user()),     allocator);
-    params.AddMember("pass",  rapidjson::StringRef(m_url.password()), allocator);
-    params.AddMember("agent", rapidjson::StringRef(m_agent),          allocator);
+    params.AddMember("login", rapidjson::StringRef(m_url.user()), allocator);
+    params.AddMember("pass", rapidjson::StringRef(m_url.password()), allocator);
+    params.AddMember("agent", rapidjson::StringRef(m_agent), allocator);
 
     doc.AddMember("params", params, allocator);
 
@@ -359,14 +394,14 @@ void Client::login()
     }
 
     memcpy(m_sendBuf, buffer.GetString(), size);
-    m_sendBuf[size]     = '\n';
+    m_sendBuf[size] = '\n';
     m_sendBuf[size + 1] = '\0';
 
     send(size + 1);
 }
 
 
-void Client::parse(char *line, size_t len)
+void Client::parse(char* line, size_t len)
 {
     startTimeout();
 
@@ -377,7 +412,8 @@ void Client::parse(char *line, size_t len)
     rapidjson::Document doc;
     if (doc.ParseInsitu(line).HasParseError()) {
         if (!m_quiet) {
-            LOG_ERR("[%s:%u] JSON decode failed: \"%s\"", m_url.host(), m_url.port(), rapidjson::GetParseError_En(doc.GetParseError()));
+            LOG_ERR("[%s:%u] JSON decode failed: \"%s\"", m_url.host(), m_url.port(),
+                    rapidjson::GetParseError_En(doc.GetParseError()));
         }
 
         return;
@@ -387,21 +423,21 @@ void Client::parse(char *line, size_t len)
         return;
     }
 
-    const rapidjson::Value &id = doc["id"];
+    const rapidjson::Value& id = doc["id"];
     if (id.IsInt64()) {
         parseResponse(id.GetInt64(), doc["result"], doc["error"]);
-    }
-    else {
+    } else {
         parseNotification(doc["method"].GetString(), doc["params"], doc["error"]);
     }
 }
 
 
-void Client::parseNotification(const char *method, const rapidjson::Value &params, const rapidjson::Value &error)
+void Client::parseNotification(const char* method, const rapidjson::Value& params, const rapidjson::Value& error)
 {
     if (error.IsObject()) {
         if (!m_quiet) {
-            LOG_ERR("[%s:%u] error: \"%s\", code: %d", m_url.host(), m_url.port(), error["message"].GetString(), error["code"].GetInt());
+            LOG_ERR("[%s:%u] error: \"%s\", code: %d", m_url.host(), m_url.port(), error["message"].GetString(),
+                    error["code"].GetInt());
         }
         return;
     }
@@ -423,18 +459,17 @@ void Client::parseNotification(const char *method, const rapidjson::Value &param
 }
 
 
-void Client::parseResponse(int64_t id, const rapidjson::Value &result, const rapidjson::Value &error)
+void Client::parseResponse(int64_t id, const rapidjson::Value& result, const rapidjson::Value& error)
 {
     if (error.IsObject()) {
-        const char *message = error["message"].GetString();
+        const char* message = error["message"].GetString();
 
         auto it = m_results.find(id);
         if (it != m_results.end()) {
             it->second.done();
             m_listener->onResultAccepted(this, it->second, message);
             m_results.erase(it);
-        }
-        else if (!m_quiet) {
+        } else if (!m_quiet) {
             LOG_ERR("[%s:%u] error: \"%s\", code: %d", m_url.host(), m_url.port(), message, error["code"].GetInt());
         }
 
@@ -476,7 +511,9 @@ void Client::parseResponse(int64_t id, const rapidjson::Value &result, const rap
 
 void Client::ping()
 {
-    send(snprintf(m_sendBuf, sizeof(m_sendBuf), "{\"id\":%" PRId64 ",\"jsonrpc\":\"2.0\",\"method\":\"keepalived\",\"params\":{\"id\":\"%s\"}}\n", m_sequence, m_rpcId));
+    send(snprintf(m_sendBuf, sizeof(m_sendBuf),
+                  "{\"id\":%" PRId64 ",\"jsonrpc\":\"2.0\",\"method\":\"keepalived\",\"params\":{\"id\":\"%s\"}}\n",
+                  m_sequence, m_rpcId));
 }
 
 
@@ -522,21 +559,22 @@ void Client::startTimeout()
         return;
     }
 
-    uv_timer_start(&m_keepAliveTimer, [](uv_timer_t *handle) { getClient(handle->data)->ping(); }, kKeepAliveTimeout, 0);
+    uv_timer_start(&m_keepAliveTimer, [](uv_timer_t* handle) { getClient(handle->data)->ping(); }, kKeepAliveTimeout,
+                   0);
 #   endif
 }
 
 
-void Client::onAllocBuffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
+void Client::onAllocBuffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf)
 {
     auto client = getClient(handle->data);
 
     buf->base = &client->m_recvBuf.base[client->m_recvBufPos];
-    buf->len  = client->m_recvBuf.len - client->m_recvBufPos;
+    buf->len = client->m_recvBuf.len - client->m_recvBufPos;
 }
 
 
-void Client::onClose(uv_handle_t *handle)
+void Client::onClose(uv_handle_t* handle)
 {
     auto client = getClient(handle->data);
 
@@ -550,7 +588,7 @@ void Client::onClose(uv_handle_t *handle)
 }
 
 
-void Client::onConnect(uv_connect_t *req, int status)
+void Client::onConnect(uv_connect_t* req, int status)
 {
     auto client = getClient(req->data);
     if (status < 0) {
@@ -563,18 +601,32 @@ void Client::onConnect(uv_connect_t *req, int status)
         return;
     }
 
-    client->m_stream = static_cast<uv_stream_t*>(req->handle);
-    client->m_stream->data = req->data;
-    client->setState(ConnectedState);
+#   ifndef XMRIG_NO_SSL_TLS
+    if (client->m_url.isTls()) {
+        //free on uv_tls_close
+        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, &client->m_sclient) < 0) {
+            return;
+        }
 
-    uv_read_start(client->m_stream, Client::onAllocBuffer, Client::onRead);
-    delete req;
+        uv_tls_connect(&client->m_sclient, Client::onTlsHandshake);
+    } else {
+#   endif
 
-    client->login();
+        client->m_stream = static_cast<uv_stream_t*>(req->handle);
+        client->m_stream->data = req->data;
+        client->setState(ConnectedState);
+
+        uv_read_start(client->m_stream, Client::onAllocBuffer, Client::onRead);
+        delete req;
+
+        client->login();
+
+#   ifndef XMRIG_NO_SSL_TLS
+    }
+#   endif
 }
 
-
-void Client::onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+void Client::onRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf)
 {
     auto client = getClient(stream->data);
     if (nread < 0) {
@@ -618,7 +670,7 @@ void Client::onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 }
 
 
-void Client::onResolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
+void Client::onResolved(uv_getaddrinfo_t* req, int status, struct addrinfo* res)
 {
     auto client = getClient(req->data);
     if (status < 0) {
@@ -626,7 +678,7 @@ void Client::onResolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
         return client->reconnect();
     }
 
-    addrinfo *ptr = res;
+    addrinfo* ptr = res;
     std::vector<addrinfo*> ipv4;
 
     while (ptr != nullptr) {
@@ -649,3 +701,36 @@ void Client::onResolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
     client->connect(ptr->ai_addr);
     uv_freeaddrinfo(res);
 }
+
+#   ifndef XMRIG_NO_SSL_TLS
+
+void Client::onTlsHandshake(uv_tls_t* tls, int status)
+{
+    if (status == 0) {
+        auto client = getClient(tls->tcp_hdl->data);
+
+        client->m_stream = reinterpret_cast<uv_stream_t*>(tls->tcp_hdl);
+        client->m_stream->data = tls->tcp_hdl->data;;
+        client->setState(ConnectedState);
+
+        client->login();
+
+        uv_tls_read(tls, Client::onTlsRead);
+    }
+
+    delete tls;
+}
+
+void Client::onTlsRead(uv_tls_t* strm, ssize_t nrd, const uv_buf_t* bfr)
+{
+    auto client = getClient(strm->tcp_hdl->data);
+
+    onRead(client->m_stream, nrd, bfr);
+}
+
+void Client::onTlsWrite(uv_tls_t* utls, int status)
+{
+
+}
+
+#   endif

@@ -58,6 +58,8 @@ public:
 
     Url &operator=(const Url *other);
 
+    bool isTls();
+
 private:
     bool m_keepAlive;
     bool m_nicehash;

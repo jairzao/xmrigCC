@@ -35,6 +35,9 @@
 #include "net/Url.h"
 #include "rapidjson/fwd.h"
 
+#ifndef XMRIG_NO_SSL_TLS
+#include "uv_tls.h"
+#endif
 
 class IClientListener;
 class JobResult;
@@ -97,6 +100,12 @@ private:
     static void onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf);
     static void onResolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res);
 
+#   ifndef XMRIG_NO_SSL_TLS
+    static void onTlsHandshake(uv_tls_t* tls, int status);
+    static void onTlsRead(uv_tls_t *strm, ssize_t nrd, const uv_buf_t *bfr);
+    static void onTlsWrite(uv_tls_t* utls, int status);
+#   endif
+
     static inline Client *getClient(void *data) { return static_cast<Client*>(data); }
 
     addrinfo m_hints;
@@ -122,10 +131,14 @@ private:
     uv_stream_t *m_stream;
     uv_tcp_t *m_socket;
 
+#   ifndef XMRIG_NO_SSL_TLS
+    evt_ctx_t m_tls_ctx;
+    uv_tls_t m_sclient;
+#   endif
+
 #   ifndef XMRIG_PROXY_PROJECT
     uv_timer_t m_keepAliveTimer;
 #   endif
-
 };
 
 
