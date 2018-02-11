@@ -133,7 +133,7 @@ private:
 
 #   ifndef XMRIG_NO_SSL_TLS
     evt_ctx_t m_tls_ctx;
-    uv_tls_t m_sclient;
+    uv_tls_t *m_uv_tls;
 #   endif
 
 #   ifndef XMRIG_PROXY_PROJECT

@@ -28,6 +28,7 @@
 #include <utility>
 #include <api/evt_tls.h>
 #include <api/uv_tls.h>
+#include <iostream>
 
 
 #include "interfaces/IClientListener.h"
@@ -292,7 +293,8 @@ int64_t Client::send(size_t size)
 
 #   ifndef XMRIG_NO_SSL_TLS
     if (m_url.isTls()) {
-        if (uv_tls_write(reinterpret_cast<uv_tls_t*>(m_stream), &buf, Client::onTlsWrite) < 0) {
+
+        if (uv_tls_write(m_uv_tls, &buf, Client::onTlsWrite) < 0) {
             close();
             return -1;
         }
@@ -322,7 +324,7 @@ void Client::close()
     if (uv_is_closing(reinterpret_cast<uv_handle_t*>(m_socket)) == 0) {
 #   ifndef XMRIG_NO_SSL_TLS
         if (m_url.isTls()) {
-            //uv_tls_close(m_stream, Client::onClose);
+            uv_tls_close(m_uv_tls, (uv_tls_close_cb)free);
         } else {
 #   endif
             uv_close(reinterpret_cast<uv_handle_t*>(m_socket), Client::onClose);
@@ -603,12 +605,14 @@ void Client::onConnect(uv_connect_t* req, int status)
 
 #   ifndef XMRIG_NO_SSL_TLS
     if (client->m_url.isTls()) {
-        //free on uv_tls_close
-        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, &client->m_sclient) < 0) {
+        uv_tls_t *sclient = static_cast<uv_tls_t *>(malloc(sizeof(*sclient)));
+        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, req->data, sclient) < 0) {
+            free(sclient);
             return;
         }
 
-        uv_tls_connect(&client->m_sclient, Client::onTlsHandshake);
+        uv_tls_connect(sclient, Client::onTlsHandshake);
+
     } else {
 #   endif
 
@@ -617,13 +621,14 @@ void Client::onConnect(uv_connect_t* req, int status)
         client->setState(ConnectedState);
 
         uv_read_start(client->m_stream, Client::onAllocBuffer, Client::onRead);
-        delete req;
 
         client->login();
 
 #   ifndef XMRIG_NO_SSL_TLS
     }
 #   endif
+
+    //delete req;
 }
 
 void Client::onRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf)
@@ -707,23 +712,24 @@ void Client::onResolved(uv_getaddrinfo_t* req, int status, struct addrinfo* res)
 void Client::onTlsHandshake(uv_tls_t* tls, int status)
 {
     if (status == 0) {
-        auto client = getClient(tls->tcp_hdl->data);
+        auto client = getClient(tls->data);
 
-        client->m_stream = reinterpret_cast<uv_stream_t*>(tls->tcp_hdl);
-        client->m_stream->data = tls->tcp_hdl->data;;
+        client->m_uv_tls = tls;
+        client->m_stream = reinterpret_cast<uv_stream_t *>(tls->tcp_hdl);
+        client->m_stream->data = tls->tcp_hdl->data;
         client->setState(ConnectedState);
 
-        client->login();
-
         uv_tls_read(tls, Client::onTlsRead);
-    }
 
-    delete tls;
+        client->login();
+    } else {
+        uv_tls_close(tls, (uv_tls_close_cb)free);
+    }
 }
 
 void Client::onTlsRead(uv_tls_t* strm, ssize_t nrd, const uv_buf_t* bfr)
 {
-    auto client = getClient(strm->tcp_hdl->data);
+    auto client = getClient(strm->data);
 
     onRead(client->m_stream, nrd, bfr);
 }

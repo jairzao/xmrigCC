@@ -60,8 +60,6 @@ public:
 
     Url &operator=(const Url *other);
 
-    bool isTls();
-
 private:
     bool m_tls;
     bool m_keepAlive;
