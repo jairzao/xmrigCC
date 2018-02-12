@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 #include "evt_tls.h"
-#include "libuv/include/uv.h"
+#include "uv.h"
 
 //copied gladly from libuv
 #define CONTAINER_OF(ptr, type, member)                                       \
@@ -30,6 +30,7 @@ typedef void (*uv_tls_read_cb)(uv_tls_t*, ssize_t, const uv_buf_t*);
 typedef void (*uv_tls_close_cb)(uv_tls_t*);
 
 struct uv_tls_s {
+   void* data;
    uv_tcp_t *tcp_hdl;
    evt_tls_t *tls;
 
@@ -43,7 +44,7 @@ struct uv_tls_s {
 int uv_tls_writer(evt_tls_t *t, void *bfr, int sz);
 
 //int uv_tls_init(uv_loop_t *loop, evt_ctx_t *ctx, uv_tls_t *endpt);
-int uv_tls_init(evt_ctx_t *ctx, uv_tcp_t *tcp, uv_tls_t *endpt);
+int uv_tls_init(evt_ctx_t *ctx, uv_tcp_t *tcp, void* data, uv_tls_t *endpt);
 
 int uv_tls_connect(uv_tls_t *t, uv_handshake_cb cb);
 int uv_tls_accept(uv_tls_t *tls, uv_handshake_cb cb);

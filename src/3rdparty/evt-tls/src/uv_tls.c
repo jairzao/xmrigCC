@@ -34,7 +34,7 @@ int uv_tls_writer(evt_tls_t *t, void *bfr, int sz) {
 //int uv_tls_init(uv_loop_t *loop, evt_ctx_t *ctx, uv_tls_t *endpt)
 //the tcp handle being passed should have been initialized or does not required
 //to be initialized as uv_tls_init will not call uv_tcp_init
-int uv_tls_init(evt_ctx_t *ctx, uv_tcp_t *tcp, uv_tls_t *endpt)
+int uv_tls_init(evt_ctx_t *ctx, uv_tcp_t *tcp, void* data, uv_tls_t *endpt)
 {
     int r = 0;
     memset( endpt, 0, sizeof *endpt);
@@ -49,6 +49,7 @@ int uv_tls_init(evt_ctx_t *ctx, uv_tcp_t *tcp, uv_tls_t *endpt)
     t->data = endpt;
     tcp->data = endpt;
 
+    endpt->data       = data;
     endpt->tcp_hdl    = tcp;
     endpt->tls        = t;
     endpt->tls_rd_cb  = NULL;
