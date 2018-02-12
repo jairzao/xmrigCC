@@ -70,6 +70,10 @@ Client::Client(int id, const char* agent, IClientListener* listener) :
         m_expire(0),
         m_stream(nullptr),
         m_socket(nullptr)
+#   ifndef XMRIG_NO_SSL_TLS
+        , m_uv_tls(nullptr)
+#   endif
+
 {
     memset(m_ip, 0, sizeof(m_ip));
     memset(&m_hints, 0, sizeof(m_hints));
@@ -315,7 +319,10 @@ int64_t Client::send(size_t size)
 
 void Client::close()
 {
+    LOG_WARN("close");
+
     if (m_state == UnconnectedState || m_state == ClosingState || !m_socket) {
+        LOG_WARN("close -> wrong state");
         return;
     }
 
@@ -323,20 +330,26 @@ void Client::close()
 
     if (uv_is_closing(reinterpret_cast<uv_handle_t*>(m_socket)) == 0) {
 #   ifndef XMRIG_NO_SSL_TLS
-        if (m_url.isTls()) {
-            uv_tls_close(m_uv_tls, (uv_tls_close_cb)free);
+        if (m_url.isTls() && m_uv_tls) {
+            LOG_WARN("uv_tls_close");
+            uv_tls_close(m_uv_tls, Client::onTlsClose);
         } else {
 #   endif
+            LOG_WARN("uv_close");
             uv_close(reinterpret_cast<uv_handle_t*>(m_socket), Client::onClose);
 #   ifndef XMRIG_NO_SSL_TLS
         }
 #   endif
+    } else {
+        LOG_WARN("uv_is_closing != 0");
     }
 }
 
 
 void Client::connect(struct sockaddr* addr)
 {
+    LOG_WARN("connect");
+
     setState(ConnectingState);
 
     reinterpret_cast<struct sockaddr_in*>(addr)->sin_port = htons(m_url.port());
@@ -521,6 +534,8 @@ void Client::ping()
 
 void Client::reconnect()
 {
+    LOG_WARN("reconnect");
+
     setState(ConnectingState);
 
 #   ifndef XMRIG_PROXY_PROJECT
@@ -578,6 +593,8 @@ void Client::onAllocBuffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t*
 
 void Client::onClose(uv_handle_t* handle)
 {
+    LOG_WARN("onClose");
+
     auto client = getClient(handle->data);
 
     delete client->m_socket;
@@ -592,6 +609,8 @@ void Client::onClose(uv_handle_t* handle)
 
 void Client::onConnect(uv_connect_t* req, int status)
 {
+    LOG_WARN("onConnect");
+
     auto client = getClient(req->data);
     if (status < 0) {
         if (!client->m_quiet) {
@@ -605,14 +624,16 @@ void Client::onConnect(uv_connect_t* req, int status)
 
 #   ifndef XMRIG_NO_SSL_TLS
     if (client->m_url.isTls()) {
+
         uv_tls_t *sclient = static_cast<uv_tls_t *>(malloc(sizeof(*sclient)));
-        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, req->data, sclient) < 0) {
+        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, sclient) < 0) {
             free(sclient);
             return;
         }
 
-        uv_tls_connect(sclient, Client::onTlsHandshake);
+        sclient->data = req->data;
 
+        uv_tls_connect(sclient, Client::onTlsHandshake);
     } else {
 #   endif
 
@@ -628,12 +649,13 @@ void Client::onConnect(uv_connect_t* req, int status)
     }
 #   endif
 
-    //delete req;
+    delete req;
 }
 
 void Client::onRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf)
 {
     auto client = getClient(stream->data);
+
     if (nread < 0) {
         if (nread != UV_EOF && !client->m_quiet) {
             LOG_ERR("[%s:%u] read error: \"%s\"", client->m_url.host(), client->m_url.port(), uv_strerror((int) nread));
@@ -711,19 +733,19 @@ void Client::onResolved(uv_getaddrinfo_t* req, int status, struct addrinfo* res)
 
 void Client::onTlsHandshake(uv_tls_t* tls, int status)
 {
-    if (status == 0) {
-        auto client = getClient(tls->data);
+    auto client = getClient(tls->data);
 
+    if (status == 0) {
         client->m_uv_tls = tls;
         client->m_stream = reinterpret_cast<uv_stream_t *>(tls->tcp_hdl);
-        client->m_stream->data = tls->tcp_hdl->data;
         client->setState(ConnectedState);
 
         uv_tls_read(tls, Client::onTlsRead);
 
         client->login();
     } else {
-        uv_tls_close(tls, (uv_tls_close_cb)free);
+        LOG_WARN("onTlsHandshake() status %d", status);
+        client->close();
     }
 }
 
@@ -731,12 +753,30 @@ void Client::onTlsRead(uv_tls_t* strm, ssize_t nrd, const uv_buf_t* bfr)
 {
     auto client = getClient(strm->data);
 
-    onRead(client->m_stream, nrd, bfr);
+    uv_stream_t tmpStrm;
+    tmpStrm.data = client;
+
+    onRead(&tmpStrm, nrd, bfr);
 }
 
 void Client::onTlsWrite(uv_tls_t* utls, int status)
 {
+    LOG_WARN("onTlsWrite() status %d", status);
+}
 
+void Client::onTlsClose(uv_tls_t* utls)
+{
+    LOG_WARN("onTlsClose()");
+
+    auto client = getClient(utls->data);
+
+    delete client->m_uv_tls;
+    client->m_uv_tls = nullptr;
+
+    uv_handle_s tmpHandle;
+    tmpHandle.data = client;
+
+    onClose(&tmpHandle);
 }
 
 #   endif

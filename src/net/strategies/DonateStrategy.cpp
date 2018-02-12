@@ -49,7 +49,19 @@ DonateStrategy::DonateStrategy(const char *agent, IStrategyListener *listener) :
     keccak(reinterpret_cast<const uint8_t *>(user), static_cast<int>(strlen(user)), hash, sizeof(hash));
     Job::toHex(hash, 32, userId);
 
-    Url *url = new Url("donate.graef.in", Options::i()->algo() == Options::ALGO_CRYPTONIGHT_LITE ? 80 : 443, userId, nullptr, false, true);
+    Url *url;
+
+#   ifndef XMRIG_NO_SSL_TLS
+    if (Options::i()->pools().front()->isTls()) {
+        url = new Url("donate.graef.in", Options::i()->algo() == Options::ALGO_CRYPTONIGHT_LITE ? 8080 : 8081,
+                      userId, nullptr, true, false, true);
+    } else {
+#   endif
+        url = new Url("donate.graef.in", Options::i()->algo() == Options::ALGO_CRYPTONIGHT_LITE ? 80 : 443,
+                      userId, nullptr, true, false, true);
+#   ifndef XMRIG_NO_SSL_TLS
+    }
+#   endif
 
     m_client = new Client(-1, agent, this);
     m_client->setUrl(url);

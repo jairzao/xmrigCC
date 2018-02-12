@@ -104,6 +104,7 @@ private:
     static void onTlsHandshake(uv_tls_t* tls, int status);
     static void onTlsRead(uv_tls_t *strm, ssize_t nrd, const uv_buf_t *bfr);
     static void onTlsWrite(uv_tls_t* utls, int status);
+    static void onTlsClose(uv_tls_t *utls);
 #   endif
 
     static inline Client *getClient(void *data) { return static_cast<Client*>(data); }
