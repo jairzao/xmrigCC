@@ -626,12 +626,10 @@ void Client::onConnect(uv_connect_t* req, int status)
     if (client->m_url.isTls()) {
 
         uv_tls_t *sclient = static_cast<uv_tls_t *>(malloc(sizeof(*sclient)));
-        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, sclient) < 0) {
+        if (uv_tls_init(&client->m_tls_ctx, (uv_tcp_t*) req->handle, req->data, sclient) < 0) {
             free(sclient);
             return;
         }
-
-        sclient->data = req->data;
 
         uv_tls_connect(sclient, Client::onTlsHandshake);
     } else {
